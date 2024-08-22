@@ -60,6 +60,20 @@ TEST_F(UsdParserTest, BasicImportTest) {
   EXPECT_EQ(plant_.num_visual_geometries(), 11);
 }
 
+TEST_F(UsdParserTest, SimpleArticulationParsingTest) {
+  std::string filename = FindUsdTestResourceOrThrow(
+    "simple_articulation.usda");
+  const DataSource source{DataSource::kFilename, &filename};
+  ParseFile(source);
+}
+
+TEST_F(UsdParserTest, MultipleGeometriesForLinkParsingTest) {
+  std::string filename = FindUsdTestResourceOrThrow(
+    "multiple_geometries_for_link.usda");
+  const DataSource source{DataSource::kFilename, &filename};
+  ParseFile(source);
+}
+
 TEST_F(UsdParserTest, NoSuchFile) {
   std::string filename = "/no/such/file";
   const DataSource source{DataSource::kFilename, &filename};

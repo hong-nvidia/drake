@@ -1,0 +1,121 @@
+#usda 1.0
+(
+    defaultPrim = "simple_robot"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def PhysicsScene "physicsScene" (
+    apiSchemas = ["PhysxSceneAPI"]
+)
+{
+    vector3f physics:gravityDirection = (0, 0, -1)
+    float physics:gravityMagnitude = 9.81
+}
+
+def Xform "simple_robot"
+{
+    quatd xformOp:orient = (1, 0, 0, 0)
+    double3 xformOp:scale = (1, 1, 1)
+    double3 xformOp:translate = (0, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient",
+        "xformOp:scale"]
+
+    def Xform "main_body" (
+        apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {
+        float physics:mass = 0
+        quatd xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient",
+            "xformOp:scale"]
+
+        def Cylinder "visuals"
+        {
+            uniform token axis = "Z"
+            float3[] extent = [(-0.2, -0.2, -0.3), (0.2, 0.2, 0.3)]
+            double height = 0.6
+            double radius = 0.2
+            quatd xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate",
+                "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Cylinder "collisions" (
+            apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            uniform token axis = "Z"
+            float3[] extent = [(-0.2, -0.2, -0.3), (0.2, 0.2, 0.3)]
+            double height = 0.6
+            uniform token purpose = "guide"
+            double radius = 0.2
+            quatd xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate",
+                "xformOp:orient", "xformOp:scale"]
+        }
+
+        def PhysicsFixedJoint "main_body_to_component"
+        {
+            rel physics:body0 = </simple_robot/main_body>
+            rel physics:body1 = </simple_robot/component>
+            point3f physics:localPos0 = (0, 0, 0)
+            point3f physics:localPos1 = (0, 0, 0)
+            quatf physics:localRot0 = (1, 0, 0, 0)
+            quatf physics:localRot1 = (1, 0, 0, 0)
+        }
+    }
+
+    def PhysicsFixedJoint "root_joint" (
+        apiSchemas = ["PhysicsArticulationRootAPI", "PhysxArticulationAPI"]
+    )
+    {
+        rel physics:body1 = </simple_robot/main_body>
+        bool physxArticulation:enabledSelfCollisions = 0
+        int physxArticulation:solverPositionIterationCount = 32
+        int physxArticulation:solverVelocityIterationCount = 1
+    }
+
+    def Xform "component" (
+        apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+    )
+    {
+        float physics:mass = 0.000001
+        quatd xformOp:orient = (1, 0, 0, 0)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient",
+            "xformOp:scale"]
+
+        def Cube "visuals"
+        {
+            float3[] extent = [(-0.25, -0.25, -0.125), (0.25, 0.25, 0.125)]
+            double size = 1
+            quatd xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:scale = (0.5, 0.5, 0.25)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate",
+                "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Cube "collisions" (
+            apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            float3[] extent = [(-0.25, -0.25, -0.125), (0.25, 0.25, 0.125)]
+            uniform token purpose = "guide"
+            double size = 1
+            quatd xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:scale = (0.5, 0.5, 0.25)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate",
+                "xformOp:orient", "xformOp:scale"]
+        }
+    }
+}

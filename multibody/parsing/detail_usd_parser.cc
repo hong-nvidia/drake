@@ -1,6 +1,8 @@
 #include "drake/multibody/parsing/detail_usd_parser.h"
 
 #include <filesystem>
+#include <queue>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -14,6 +16,7 @@
 #include "pxr/usd/usdGeom/cylinder.h"
 #include "pxr/usd/usdGeom/mesh.h"
 #include "pxr/usd/usdGeom/sphere.h"
+#include "pxr/usd/usdPhysics/joint.h"
 #include <fmt/format.h>
 
 #include "drake/common/find_runfiles.h"
@@ -43,9 +46,13 @@ class UsdParser {
     const std::optional<std::string>& parent_model_name);
 
  private:
-  void ProcessPrim(const pxr::UsdPrim& prim);
-  void ProcessRigidBody(const pxr::UsdPrim& prim, bool is_static);
-  UsdStageMetadata GetStageMetadata(const pxr::UsdStageRefPtr stage);
+  void ProcessFreeFloatingRigidBody(const pxr::UsdPrim& prim);
+  void CreateFreeFloatingRigidBody(const pxr::UsdPrim& prim, bool is_static);
+  void ProcessArticulation(const pxr::UsdPrim& prim,
+    const pxr::UsdStageRefPtr& stage);
+  std::set<pxr::SdfPath> FindPhysicsArticulationRoots(
+    const pxr::UsdStageRefPtr& stage);
+  UsdStageMetadata GetStageMetadata(const pxr::UsdStageRefPtr& stage);
   std::unique_ptr<geometry::Shape> CreateCollisionGeometry(
     const pxr::UsdPrim& prim);
   std::unique_ptr<geometry::Shape> CreateVisualGeometry(
@@ -98,21 +105,22 @@ std::vector<ModelInstanceIndex> UsdParserWrapper::AddAllModels(
     const DataSource& data_source,
     const std::optional<std::string>& parent_model_name,
     const ParsingWorkspace& workspace) {
-  // The first time AddAllModels is called, we need to call
-  // InitializeOpenUsdLibrary() to prepare.  We can ensure that happens
-  // exactly once, in a threadsafe manner, by using a dummy function-local
-  // static variable.
-  static const int ignored = []() {
-    InitializeOpenUsdLibrary();
-    return 0;
-  }();
-  unused(ignored);
   UsdParser parser(workspace);
   return parser.AddAllModels(data_source, parent_model_name);
 }
 
 UsdParser::UsdParser(const ParsingWorkspace& ws) : w_{ws} {
   temp_directory_ = temp_directory();
+
+  // The first time AddAllModels is called, we need to call
+  // InitializeOpenUsdLibrary() to prepare.  We can ensure that happens
+  // exactly once, in a threadsafe manner, by using a dummy function-local
+  // static variable.
+  static const int ignored = []() {
+    UsdParserWrapper::InitializeOpenUsdLibrary();
+    return 0;
+  }();
+  unused(ignored);
 }
 
 std::unique_ptr<geometry::Shape> UsdParser::CreateVisualGeometry(
@@ -178,7 +186,7 @@ const RigidBody<double>* UsdParser::CreateRigidBody(const pxr::UsdPrim& prim) {
   }
 }
 
-void UsdParser::ProcessRigidBody(const pxr::UsdPrim& prim,
+void UsdParser::CreateFreeFloatingRigidBody(const pxr::UsdPrim& prim,
   bool is_static) {
   auto collision_geometry = CreateCollisionGeometry(prim);
   if (!collision_geometry) {
@@ -235,18 +243,30 @@ void UsdParser::ProcessRigidBody(const pxr::UsdPrim& prim,
     prim_color.has_value() ? prim_color.value() : default_geom_prim_color());
 }
 
-void UsdParser::ProcessPrim(const pxr::UsdPrim& prim) {
-  drake::log()->info(fmt::format("Processing {}", prim.GetPath().GetString()));
+void UsdParser::ProcessFreeFloatingRigidBody(const pxr::UsdPrim& prim) {
   if (prim.HasAPI(pxr::TfToken("PhysicsCollisionAPI"))) {
+    drake::log()->info(fmt::format("Processing environment object {}",
+      prim.GetPath().GetString()));
     if (prim.HasAPI(pxr::TfToken("PhysicsRigidBodyAPI"))) {
-      ProcessRigidBody(prim, false);
+      CreateFreeFloatingRigidBody(prim, false);
     } else {
-      ProcessRigidBody(prim, true);
+      CreateFreeFloatingRigidBody(prim, true);
     }
   }
 }
 
-UsdStageMetadata UsdParser::GetStageMetadata(const pxr::UsdStageRefPtr stage) {
+void UsdParser::ProcessArticulation(const pxr::UsdPrim& prim,
+  const pxr::UsdStageRefPtr& stage) {
+  drake::log()->info(fmt::format("Processing articulation: {}",
+    prim.GetPath().GetString()));
+  for (const auto& component : prim.GetChildren()) {
+    drake::log()->info(fmt::format("  Processing component: {}",
+      component.GetPath().GetString()));
+  }
+}
+
+UsdStageMetadata UsdParser::GetStageMetadata(
+  const pxr::UsdStageRefPtr& stage) {
   UsdStageMetadata metadata;
 
   bool success = false;
@@ -274,6 +294,39 @@ UsdStageMetadata UsdParser::GetStageMetadata(const pxr::UsdStageRefPtr stage) {
       "implemented.");
   }
   return metadata;
+}
+
+std::set<pxr::SdfPath> UsdParser::FindPhysicsArticulationRoots(
+  const pxr::UsdStageRefPtr& stage) {
+  std::set<pxr::SdfPath> articulation_root_paths;
+  for (const pxr::UsdPrim& prim : stage->Traverse()) {
+    if (prim.HasAPI(pxr::TfToken("PhysicsArticulationRootAPI"))) {
+      // If the API is applied on a joint, then the root of the articulation is
+      // the parent Prim of what this joint is pointing to.
+      if (prim.IsA<pxr::UsdPhysicsJoint>()) {
+        pxr::UsdPhysicsJoint joint = pxr::UsdPhysicsJoint(prim);
+        std::vector<pxr::SdfPath> targets;
+        bool success = joint.GetBody1Rel().GetTargets(&targets);
+        if (!success) {
+          w_.diagnostic.Error(fmt::format("Failed to read the `body1` "
+            "attribute of the joint at {}.", prim.GetPath().GetString()));
+          continue;
+        }
+        if (targets.size() != 1) {
+          w_.diagnostic.Error(fmt::format("The `body1` relatioinship at {} "
+            "should have one and only one target.",
+            prim.GetPath().GetString()));
+          continue;
+        }
+        pxr::SdfPath target_link_path = targets[0];
+        pxr::SdfPath articulation_root_path = target_link_path.GetParentPath();
+        articulation_root_paths.insert(articulation_root_path);
+      } else {  // Otherwise, the current Prim is the root of the articulation.
+        articulation_root_paths.insert(prim.GetPath());
+      }
+    }
+  }
+  return articulation_root_paths;
 }
 
 std::vector<ModelInstanceIndex> UsdParser::AddAllModels(
@@ -307,9 +360,31 @@ std::vector<ModelInstanceIndex> UsdParser::AddAllModels(
     data_source.GetStem(), parent_model_name, w_);
   model_instance_ = w_.plant->AddModelInstance(model_name);
 
-  for (pxr::UsdPrim prim : stage->Traverse()) {
-    ProcessPrim(prim);
+  std::set<pxr::SdfPath> articulation_root_paths =
+    UsdParser::FindPhysicsArticulationRoots(stage);
+
+  // BFS traversal of the scene graph and process Prims.
+  std::queue<pxr::UsdPrim> prim_queue;
+  prim_queue.push(stage->GetPseudoRoot());
+  while (!prim_queue.empty()) {
+    pxr::UsdPrim current_prim = prim_queue.front();
+    prim_queue.pop();
+
+    std::set<pxr::SdfPath>::iterator element_position =
+      articulation_root_paths.find(current_prim.GetPath());
+    if (element_position != articulation_root_paths.end()) {
+      ProcessArticulation(current_prim, stage);
+      articulation_root_paths.erase(element_position);
+    } else {
+      ProcessFreeFloatingRigidBody(current_prim);
+      for (const auto& child : current_prim.GetChildren()) {
+        prim_queue.push(child);
+      }
+    }
   }
+
+  // TODO(hong-nvidia): Remove DRAKE_DEMAND()
+  DRAKE_DEMAND(articulation_root_paths.size() == 0);
 
   return std::vector<ModelInstanceIndex>{ model_instance_ };
 }
