@@ -17,7 +17,12 @@
 #include "pxr/usd/usdGeom/mesh.h"
 #include "pxr/usd/usdGeom/sphere.h"
 #include "pxr/usd/usdGeom/xform.h"
+#include "pxr/usd/usdPhysics/distanceJoint.h"
+#include "pxr/usd/usdPhysics/fixedJoint.h"
 #include "pxr/usd/usdPhysics/joint.h"
+#include "pxr/usd/usdPhysics/prismaticJoint.h"
+#include "pxr/usd/usdPhysics/revoluteJoint.h"
+#include "pxr/usd/usdPhysics/sphericalJoint.h"
 #include <fmt/format.h>
 
 #include "drake/common/find_runfiles.h"
@@ -76,6 +81,9 @@ class UsdParser {
   }
   std::string GetArticulationName(const pxr::UsdPrim& prim) {
     return fmt::format("{}-Articulation", prim.GetPath().GetString());
+  }
+  std::string GetJointName(const pxr::UsdPrim& prim) {
+    return fmt::format("{}-Joint", prim.GetPath().GetString());
   }
 
   std::string temp_directory_;
@@ -323,17 +331,56 @@ std::pair<std::optional<pxr::UsdPrim>, std::optional<pxr::UsdPrim>>
 }
 
 void UsdParser::ProcessJoint(const pxr::UsdPhysicsJoint& joint) {
+  pxr::UsdPrim prim = joint.GetPrim();
+  if (prim.HasAPI(pxr::TfToken("PhysicsArticulationRootAPI"))) {
+    // TODO(hong-nvidia): Determine what to do with root joint.
+    return;
+  }
+
   const std::string prim_path = joint.GetPrim().GetPath().GetString();
   drake::log()->info(fmt::format("  Processing joint: {}", prim_path));
 
   auto body0_body1_pair = GetBody0Body1ForJoint(joint);
-  if (body0_body1_pair.first.has_value()) {
-    drake::log()->info(fmt::format("    Body0: {}",
-      body0_body1_pair.first.value().GetPath()));
+  if (!body0_body1_pair.first.has_value() ||
+      !body0_body1_pair.second.has_value()) {
+    drake::log()->error(fmt::format("Joint at {} has invalid reference to ",
+      "either body 0 or body1.", prim_path));
+    return;
   }
-  if (body0_body1_pair.second.has_value()) {
-    drake::log()->info(fmt::format("    Body1: {}",
-      body0_body1_pair.second.value().GetPath()));
+
+  drake::log()->info(fmt::format("    Body0: {}",
+    body0_body1_pair.first.value().GetPath()));
+  drake::log()->info(fmt::format("    Body1: {}",
+    body0_body1_pair.second.value().GetPath()));
+
+  std::string parent_body_name = GetRigidBodyName(
+    body0_body1_pair.first.value());
+  std::string child_body_name = GetRigidBodyName(
+    body0_body1_pair.second.value());
+
+  // auto joint = WeldJoint<double>(
+  //   GetJointName(joint.GetPrim()),
+  // );
+
+  if (prim.IsA<pxr::UsdPhysicsFixedJoint>()) {
+    w_.plant->AddJoint<WeldJoint>(
+      GetJointName(joint.GetPrim()),
+      w_.plant->GetRigidBodyByName(parent_body_name),
+      std::nullopt,  // TODO(hong-nvidia): Implement this
+      w_.plant->GetRigidBodyByName(child_body_name),
+      std::nullopt,  // TODO(hong-nvidia): Implement this
+      math::RigidTransformd::Identity());
+  } else if (prim.IsA<pxr::UsdPhysicsPrismaticJoint>()) {
+    // TODO(hong-nvidia): Implement this.
+  } else if (prim.IsA<pxr::UsdPhysicsRevoluteJoint>()) {
+    // TODO(hong-nvidia): Implement this.
+  } else if (prim.IsA<pxr::UsdPhysicsSphericalJoint>()) {
+    // TODO(hong-nvidia): Implement this.
+  } else if (prim.IsA<pxr::UsdPhysicsDistanceJoint>()) {
+    // TODO(hong-nvidia): Implement this.
+  } else {
+    // TODO(hong-nvidia): Implement this.
+    // Plain joint with manual specification of constraints?
   }
 }
 
@@ -342,7 +389,7 @@ void UsdParser::ProcessArticulation(const pxr::UsdPrim& prim) {
     prim.GetPath().GetString()));
 
   ModelInstanceIndex articulation_instance = w_.plant->AddModelInstance(
-   GetArticulationName(prim));
+    GetArticulationName(prim));
   model_instances_.push_back(articulation_instance);
 
   std::vector<pxr::UsdPrim> links;
@@ -414,14 +461,15 @@ std::set<pxr::SdfPath> UsdParser::FindPhysicsArticulationRoots() {
       // If the API is applied on a joint, then the root of the articulation is
       // the parent Prim of what this joint is pointing to.
       if (prim.IsA<pxr::UsdPhysicsJoint>()) {
-        auto bodies_pair = GetBody0Body1ForJoint(
+        auto body0_body1_pair = GetBody0Body1ForJoint(
           pxr::UsdPhysicsJoint(prim));
-        if (!bodies_pair.second.has_value()) {
+        if (!body0_body1_pair.second.has_value()) {
           w_.diagnostic.Error(fmt::format("Failed to read the `body1` "
             "attribute of the joint at {}.", prim.GetPath().GetString()));
           continue;
         }
-        pxr::SdfPath target_link_path = bodies_pair.second.value().GetPath();
+        pxr::SdfPath target_link_path =
+          body0_body1_pair.second.value().GetPath();
         pxr::SdfPath articulation_root_path = target_link_path.GetParentPath();
         articulation_root_paths.insert(articulation_root_path);
       } else {  // Otherwise, the current Prim is the root of the articulation.
